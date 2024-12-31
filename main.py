@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 from collections import deque
 
-token = ''
+token = 'YOUR_BOT_TOKEN'
 prefix = '!'
 CACHE_DIRECTORY = "music_cache"
 
