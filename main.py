@@ -9,11 +9,16 @@ import json
 from collections import deque
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
 
+# Get Discord token and command prefix
 token = os.getenv('DISCORD_TOKEN')
 prefix = '!'
+
+# Cache directory for downloaded songs
 CACHE_DIRECTORY = "music_cache"
+
 
 # Bot config
 intents = discord.Intents.default()
@@ -63,6 +68,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.url = data.get('url')
         self.filename = data.get('filename', None)
 
+    # Download song from URL
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
@@ -102,7 +108,7 @@ async def on_ready():
 
 def is_correct_channel():
     async def predicate(ctx):
-        return ctx.channel.name == 'seggs-bot-cmd'
+        return ctx.channel.name == 'utaha-yap-cmd'
     return commands.check(predicate)
 
 @bot.command(name='join')
@@ -270,12 +276,21 @@ async def play_next(ctx, guild_id, current_player=None):
                 )
             else:
                 asyncio.run_coroutine_threadsafe(
-                    ctx.send("Queue finished!"), bot.loop
+                    ctx.send("I'm done yapping!"), bot.loop
                 )
 
     try:
         ctx.voice_client.play(current_player, after=after_playing)
-        await ctx.send(f'Now playing: {current_player.title}')
+        embed = discord.Embed(
+            title="Now yapping",
+            description=f"{current_player.title}",
+            color=discord.Color.purple()
+        )
+
+        await ctx.send(
+            embed=embed,
+            file=discord.File('img/utaha.png', filename='utaha.png')  # Ensure the filename matches the one in set_thumbnail
+        )
     except Exception as e:
         await ctx.send(f"An error occurred while playing: {str(e)}")
 
@@ -318,7 +333,7 @@ async def on_command_error(ctx, error):
         retry_after = error.retry_after if hasattr(error, 'retry_after') else 60
         await ctx.send(f"Bot is rate limited. Please try again in {retry_after} seconds.")
     elif isinstance(error, commands.CheckFailure):
-        await ctx.send("Please use commands in the #seggs-bot-cmd channel!")
+        await ctx.send("Please use commands in the #utaha-yap-cmd channel!")
     else:
         print(f"Command error: {error}")
 
@@ -366,6 +381,22 @@ async def clear(ctx):
     else:
         await ctx.send("No queue exists!")
 
+@bot.command(name='info')
+async def info(ctx):
+    embed = discord.Embed(
+        title="Utaha",
+        description="This is how Utaha sounds like",
+        color=discord.Color.purple()
+    )
+    embed.add_field(name="Author", value="F.Femto", inline=False)
+    embed.add_field(name="Version", value="1.0", inline=False)
+    embed.set_footer(text="Thank you for listening Utaha!")
+    embed.set_thumbnail(url="https://imgur.com/qrcB6kn")  # Optional: Add a thumbnail image
+
+    await ctx.send(embed=embed)
+
+
+# Personal uses commands
 @bot.command(name='seia')
 @is_correct_channel()
 async def seia(ctx):
@@ -374,15 +405,20 @@ async def seia(ctx):
 
 @bot.command(name='aru')
 @is_correct_channel()
-async def seia(ctx):
+async def aru(ctx):
     url = "https://www.youtube.com/watch?v=ptKDIAXYoE8"
     await play(ctx, url)
 
 @bot.command(name='arisu')
 @is_correct_channel()
-async def seia(ctx):
+async def arisu(ctx):
     url = "https://www.youtube.com/watch?v=toPWvdaC84w"
     await play(ctx, url)
+
+# @bot.command(name='28')
+# @is_correct_channel()
+# async def koyuki(ctx):
+#     await ctx.send("28")
 
 
 # Run bot
