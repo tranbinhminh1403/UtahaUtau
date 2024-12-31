@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Bot configuration
-const token = 'YOUR_BOT_TOKEN';
+const token = process.env.DISCORD_TOKEN;
 const prefix = '!';
 const CACHE_DIRECTORY = 'music_cache';
 
