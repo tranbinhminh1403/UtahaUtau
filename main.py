@@ -131,8 +131,8 @@ class MusicQueue:
         self.loop_count = 0  # Number of times to loop (0 = no loop, -1 = infinite)
         self.current_loops = 0  # Track how many times current song has looped
 
-    def add(self, item, loop_count=0):
-        self.queue.append((item, loop_count))
+    def add(self, item):
+        self.queue.append(item)
 
     def next(self):
         if self.current and self.loop_count != 0:
@@ -147,7 +147,7 @@ class MusicQueue:
         # No more loops or no current song
         self.current_loops = 0
         if len(self.queue) > 0:
-            self.current, self.loop_count = self.queue.popleft()
+            self.current = self.queue.popleft()
             return self.current
         self.current = None
         self.loop_count = 0
@@ -160,7 +160,11 @@ class MusicQueue:
         self.current_loops = 0
 
     def get_current_title(self):
-        return self.current.title if self.current else None
+        if self.current is None:
+            return None
+        url, _ = self.current  # Unpack the tuple
+        # Return title from cache if available, otherwise return URL
+        return song_cache[url]['title'] if url in song_cache else url
 
 music_queues = {}  # Dictionary to store queues for each guild
 
@@ -175,16 +179,16 @@ async def play(ctx, *args):
     skip_flag = False
     loop_count = 0
     url = args[0]
-    
+
     # Check for flags
     if args[0].startswith('x'):
         if len(args) < 2:
             await ctx.send("Please provide a URL after loop count!")
             return
-        
+
         loop_str = args[0][1:]  # Remove 'x' prefix
         url = args[1]
-        
+
         if loop_str == '!':
             loop_count = -1  # Infinite loop
         else:
@@ -196,7 +200,7 @@ async def play(ctx, *args):
             except ValueError:
                 await ctx.send("Invalid loop count format!")
                 return
-    
+
     elif args[0] == '--skip':
         if len(args) < 2:
             await ctx.send("Please provide a URL after --skip!")
@@ -211,12 +215,12 @@ async def play(ctx, *args):
     # Check if the song is currently playing
     queue = music_queues[guild_id]
     if ctx.voice_client and ctx.voice_client.is_playing():
-        current_title = queue.get_current_title()
-        new_song = await YTDLSource.from_url(url, loop=bot.loop, stream=False)
-        
-        if current_title == new_song.title:
-            await ctx.send(f"'{new_song.title}' is already playing!")
-            return
+        # Only check title if the song is cached
+        if url in song_cache:
+            current_title = queue.get_current_title()
+            if current_title == song_cache[url]['title']:
+                await ctx.send(f"'{song_cache[url]['title']}' is already playing!")
+                return
 
     if ctx.voice_client is None:
         if ctx.author.voice:
@@ -226,39 +230,43 @@ async def play(ctx, *args):
             return
 
     async with ctx.typing():
-        player = await YTDLSource.from_url(url, loop=bot.loop, stream=False)
+        # Just store the URL and loop count
+        music_queues[guild_id].add((url, loop_count))
         
-        if ctx.voice_client.is_playing():
-            if skip_flag:
-                ctx.voice_client.stop()
-                music_queues[guild_id].loop_count = loop_count
-                await play_next(ctx, guild_id, player)
-            else:
-                music_queues[guild_id].add(player, loop_count)
-                loop_msg = ""
-                if loop_count == -1:
-                    loop_msg = " (will loop infinitely)"
-                elif loop_count > 0:
-                    loop_msg = f" (will loop {loop_count} times)"
-                await ctx.send(f'Added to queue: {player.title}{loop_msg}')
-            return
+        # Get title from cache if available
+        title = song_cache[url]['title'] if url in song_cache else url
+        
+        loop_msg = ""
+        if loop_count == -1:
+            loop_msg = " (will loop infinitely)"
+        elif loop_count > 0:
+            loop_msg = f" (will loop {loop_count} times)"
+        await ctx.send(f'Added to queue: {title}{loop_msg}')
 
-        music_queues[guild_id].clear()
-        music_queues[guild_id].loop_count = loop_count
-        await play_next(ctx, guild_id, player)
+        # If nothing is playing, start playing the next song
+        if not ctx.voice_client.is_playing():
+            print("Starting playback of the first song in the queue.")
+            await play_next(ctx, guild_id)
 
 async def play_next(ctx, guild_id, current_player=None):
     if guild_id not in music_queues:
         return
 
     queue = music_queues[guild_id]
-    
+
     # If no current_player provided, get next from queue
     if current_player is None:
         current_player = queue.next()
-        
+
     if current_player is None:
+        print("Queue is empty, nothing to play.")
         return
+
+    # Unpack the URL and loop count
+    url, loop_count = current_player
+    
+    # Download the song now
+    player = await YTDLSource.from_url(url, loop=bot.loop, stream=False)
 
     def after_playing(error):
         if error:
@@ -280,16 +288,17 @@ async def play_next(ctx, guild_id, current_player=None):
                 )
 
     try:
-        ctx.voice_client.play(current_player, after=after_playing)
+        print(f"Playing song: {player.title}")
+        ctx.voice_client.play(player, after=after_playing)
         embed = discord.Embed(
             title="Now yapping",
-            description=f"{current_player.title}",
+            description=f"{player.title}",
             color=discord.Color.purple()
         )
 
         await ctx.send(
             embed=embed,
-            file=discord.File('img/utaha.png', filename='utaha.png')  # Ensure the filename matches the one in set_thumbnail
+            file=discord.File('img/utaha.png', filename='utaha.png')
         )
     except Exception as e:
         await ctx.send(f"An error occurred while playing: {str(e)}")
@@ -358,7 +367,8 @@ async def show_queue(ctx):
         await ctx.send("Queue is empty!")
         return
 
-    queue_list = "\n".join([f"{i+1}. {player.title}" for i, player in enumerate(queue.queue)])
+    queue_list = "\n".join([f"{i+1}. {song_cache[url]['title'] if url in song_cache else url}" 
+                           for i, ((url, _), _) in enumerate(queue.queue)])
     await ctx.send(f"**Current queue:**\n{queue_list}")
 
 @bot.command(name='skip')
