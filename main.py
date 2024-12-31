@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 import json
 from collections import deque
+from dotenv import load_dotenv
+
+load_dotenv()
 
 token = os.getenv('DISCORD_TOKEN')
 prefix = '!'
@@ -362,6 +365,25 @@ async def clear(ctx):
         await ctx.send("Queue cleared!")
     else:
         await ctx.send("No queue exists!")
+
+@bot.command(name='seia')
+@is_correct_channel()
+async def seia(ctx):
+    url = "https://www.youtube.com/watch?v=6wqcni74cM4"
+    await play(ctx, url)
+
+@bot.command(name='aru')
+@is_correct_channel()
+async def seia(ctx):
+    url = "https://www.youtube.com/watch?v=ptKDIAXYoE8"
+    await play(ctx, url)
+
+@bot.command(name='arisu')
+@is_correct_channel()
+async def seia(ctx):
+    url = "https://www.youtube.com/watch?v=toPWvdaC84w"
+    await play(ctx, url)
+
 
 # Run bot
 bot.run(token)
