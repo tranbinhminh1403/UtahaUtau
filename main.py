@@ -387,18 +387,76 @@ async def info(ctx):
 # Personal uses commands
 @bot.tree.command(name="seia", description="Play Seia's song")
 async def seia(interaction: discord.Interaction):
+    await interaction.response.defer()  # Add defer since we're using play command
     url = "https://www.youtube.com/watch?v=6wqcni74cM4"
-    await play(interaction, url)
+    # Check if user is in a voice channel
+    if interaction.user.voice is None:
+        await interaction.followup.send("You're not connected to a voice channel!")
+        return
+    # Connect to voice channel if not already connected
+    if interaction.guild.voice_client is None:
+        await interaction.user.voice.channel.connect()
+    
+    guild_id = interaction.guild_id
+    if guild_id not in music_queues:
+        music_queues[guild_id] = MusicQueue()
+    
+    queue = music_queues[guild_id]
+    queue.add((url, 0))  # Add with no loop
+    
+    if not interaction.guild.voice_client.is_playing():
+        await play_next(interaction, guild_id)
+    else:
+        await interaction.followup.send(f"Added Seia's song to queue!")
+
 
 @bot.tree.command(name="aru", description="Play Aru's song")
 async def aru(interaction: discord.Interaction):
+    await interaction.response.defer()  # Add defer since we're using play command
     url = "https://www.youtube.com/watch?v=ptKDIAXYoE8"
-    await play(interaction, url)
+    # Check if user is in a voice channel
+    if interaction.user.voice is None:
+        await interaction.followup.send("You're not connected to a voice channel!")
+        return
+    # Connect to voice channel if not already connected
+    if interaction.guild.voice_client is None:
+        await interaction.user.voice.channel.connect()
+    
+    guild_id = interaction.guild_id
+    if guild_id not in music_queues:
+        music_queues[guild_id] = MusicQueue()
+    
+    queue = music_queues[guild_id]
+    queue.add((url, 0))  # Add with no loop
+    
+    if not interaction.guild.voice_client.is_playing():
+        await play_next(interaction, guild_id)
+    else:
+        await interaction.followup.send(f"Added Seia's song to queue!")
 
 @bot.tree.command(name="arisu", description="Play Arisu's song")
 async def arisu(interaction: discord.Interaction):
+    await interaction.response.defer()  # Add defer since we're using play command
     url = "https://www.youtube.com/watch?v=toPWvdaC84w"
-    await play(interaction, url)
+    # Check if user is in a voice channel
+    if interaction.user.voice is None:
+        await interaction.followup.send("You're not connected to a voice channel!")
+        return
+    # Connect to voice channel if not already connected
+    if interaction.guild.voice_client is None:
+        await interaction.user.voice.channel.connect()
+    
+    guild_id = interaction.guild_id
+    if guild_id not in music_queues:
+        music_queues[guild_id] = MusicQueue()
+    
+    queue = music_queues[guild_id]
+    queue.add((url, 0))  # Add with no loop
+    
+    if not interaction.guild.voice_client.is_playing():
+        await play_next(interaction, guild_id)
+    else:
+        await interaction.followup.send(f"Added Seia's song to queue!")
 
 # @discord.app_commands.command(name='28')
 # @is_correct_channel()
