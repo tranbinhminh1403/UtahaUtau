@@ -8,13 +8,14 @@ from pathlib import Path
 import json
 from collections import deque
 from dotenv import load_dotenv
+from discord import app_commands
 
 # Load environment variables
 load_dotenv()
 
 # Get Discord token and command prefix
 token = os.getenv('DISCORD_TOKEN')
-prefix = '!'
+prefix = '/'
 
 # Cache directory for downloaded songs
 CACHE_DIRECTORY = "music_cache"
@@ -105,24 +106,29 @@ class YTDLSource(discord.PCMVolumeTransformer):
 @bot.event
 async def on_ready():
     print(f'Bot is ready! Logged in as {bot.user}')
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(f"Failed to sync commands: {e}")
 
 def is_correct_channel():
-    async def predicate(ctx):
-        return ctx.channel.name == 'utaha-yap-cmd'
-    return commands.check(predicate)
+    async def predicate(interaction: discord.Interaction):
+        return interaction.channel.name == 'utaha-yap-cmd'
+    return app_commands.check(predicate)
 
-@bot.command(name='join')
-@is_correct_channel()
-async def join(ctx):
-    if ctx.author.voice is None:
-        await ctx.send("You're not connected to a voice channel!")
+@bot.tree.command(name="join", description="Join your voice channel")
+async def join(interaction: discord.Interaction):
+    if interaction.user.voice is None:
+        await interaction.response.send_message("You're not connected to a voice channel!")
         return
     
-    voice_channel = ctx.author.voice.channel
-    if ctx.voice_client is None:
+    voice_channel = interaction.user.voice.channel
+    if interaction.guild.voice_client is None:
         await voice_channel.connect()
     else:
-        await ctx.voice_client.move_to(voice_channel)
+        await interaction.guild.voice_client.move_to(voice_channel)
+    await interaction.response.send_message("Joined the voice channel!")
 
 class MusicQueue:
     def __init__(self):
@@ -168,87 +174,63 @@ class MusicQueue:
 
 music_queues = {}  # Dictionary to store queues for each guild
 
-@bot.command(name='play')
-@is_correct_channel()
-async def play(ctx, *args):
-    if len(args) == 0:
-        await ctx.send("Please provide a URL!")
+@bot.tree.command(name="play", description="Play a song from URL")
+@app_commands.describe(
+    url="The URL of the song to play",
+    loop="Number of times to loop (use ! for infinite)",
+    skip="Skip current song if playing"
+)
+async def play(
+    interaction: discord.Interaction, 
+    url: str, 
+    loop: str = None, 
+    skip: bool = False
+):
+    await interaction.response.defer()  # Important for longer operations
+    
+    # Check if user is in a voice channel
+    if interaction.user.voice is None:
+        await interaction.followup.send("You're not connected to a voice channel!")
         return
 
-    # Parse arguments
-    skip_flag = False
-    loop_count = 0
-    url = args[0]
-
-    # Check for flags
-    if args[0].startswith('x'):
-        if len(args) < 2:
-            await ctx.send("Please provide a URL after loop count!")
-            return
-
-        loop_str = args[0][1:]  # Remove 'x' prefix
-        url = args[1]
-
-        if loop_str == '!':
-            loop_count = -1  # Infinite loop
-        else:
-            try:
-                loop_count = int(loop_str)
-                if loop_count <= 0:
-                    await ctx.send("Loop count must be positive!")
-                    return
-            except ValueError:
-                await ctx.send("Invalid loop count format!")
-                return
-
-    elif args[0] == '--skip':
-        if len(args) < 2:
-            await ctx.send("Please provide a URL after --skip!")
-            return
-        skip_flag = True
-        url = args[1]
-
-    guild_id = ctx.guild.id
+    # Connect to voice channel if not already connected
+    if interaction.guild.voice_client is None:
+        await interaction.user.voice.channel.connect()
+    
+    guild_id = interaction.guild_id
     if guild_id not in music_queues:
         music_queues[guild_id] = MusicQueue()
 
-    # Check if the song is currently playing
     queue = music_queues[guild_id]
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        # Only check title if the song is cached
-        if url in song_cache:
-            current_title = queue.get_current_title()
-            if current_title == song_cache[url]['title']:
-                await ctx.send(f"'{song_cache[url]['title']}' is already playing!")
+    
+    # Parse loop argument
+    loop_count = 0
+    if loop:
+        if loop == "!":
+            loop_count = -1
+        else:
+            try:
+                loop_count = int(loop)
+                if loop_count <= 0:
+                    await interaction.followup.send("Loop count must be positive!")
+                    return
+            except ValueError:
+                await interaction.followup.send("Invalid loop count format!")
                 return
 
-    if ctx.voice_client is None:
-        if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
-        else:
-            await ctx.send("You're not connected to a voice channel!")
-            return
+    # Add to queue
+    queue.add((url, loop_count))
 
-    async with ctx.typing():
-        # Just store the URL and loop count
-        music_queues[guild_id].add((url, loop_count))
-        
-        # Get title from cache if available
-        title = song_cache[url]['title'] if url in song_cache else url
-        
-        loop_msg = ""
-        if loop_count == -1:
-            loop_msg = " (will loop infinitely)"
-        elif loop_count > 0:
-            loop_msg = f" (will loop {loop_count} times)"
-        await ctx.send(f'Added to queue: {title}{loop_msg}')
+    # If nothing is playing or skip is True, start playing
+    if not interaction.guild.voice_client.is_playing() or skip:
+        if skip and interaction.guild.voice_client.is_playing():
+            interaction.guild.voice_client.stop()
+        await play_next(interaction, guild_id)
+        return
 
-        # If nothing is playing, start playing the next song
-        if not ctx.voice_client.is_playing():
-            print("Starting playback of the first song in the queue.")
-            await play_next(ctx, guild_id)
+    await interaction.followup.send(f"Added to queue: {url}")
 
-async def play_next(ctx, guild_id, current_player=None):
+async def play_next(interaction, guild_id, current_player=None):
     if guild_id not in music_queues:
         return
 
@@ -272,7 +254,7 @@ async def play_next(ctx, guild_id, current_player=None):
         if error:
             print(f'Player error: {error}')
             asyncio.run_coroutine_threadsafe(
-                ctx.send(f"An error occurred: {error}"), bot.loop
+                interaction.followup.send(f"An error occurred: {error}"), bot.loop
             )
         else:
             print("Song finished playing normally")
@@ -280,50 +262,48 @@ async def play_next(ctx, guild_id, current_player=None):
             next_player = queue.next()
             if next_player:
                 asyncio.run_coroutine_threadsafe(
-                    play_next(ctx, guild_id, next_player), bot.loop
+                    play_next(interaction, guild_id, next_player), bot.loop
                 )
             else:
                 asyncio.run_coroutine_threadsafe(
-                    ctx.send("I'm done yapping!"), bot.loop
+                    interaction.followup.send("I'm done yapping!"), bot.loop
                 )
 
     try:
         print(f"Playing song: {player.title}")
-        ctx.voice_client.play(player, after=after_playing)
+        interaction.guild.voice_client.play(player, after=after_playing)
         embed = discord.Embed(
             title="Now yapping",
             description=f"{player.title}",
             color=discord.Color.purple()
         )
 
-        await ctx.send(
+        await interaction.followup.send(
             embed=embed,
             file=discord.File('img/utaha.png', filename='utaha.png')
         )
     except Exception as e:
-        await ctx.send(f"An error occurred while playing: {str(e)}")
+        await interaction.followup.send(f"An error occurred while playing: {str(e)}")
 
-@bot.command(name='stop')
-@is_correct_channel()
-async def stop(ctx):
-    guild_id = ctx.guild.id
+@bot.tree.command(name="stop", description="Stop playing and clear queue")
+async def stop(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
     if guild_id in music_queues:
         music_queues[guild_id].clear()
     
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        await ctx.send("Stopped playing and cleared queue!")
+    if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
+        interaction.guild.voice_client.stop()
+        await interaction.response.send_message("Stopped playing and cleared queue!")
     else:
-        await ctx.send("Not playing anything right now!")
+        await interaction.response.send_message("Not playing anything right now!")
 
-@bot.command(name='leave')
-@is_correct_channel()
-async def leave(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("Left the voice channel!")
+@bot.tree.command(name="leave", description="Leave the voice channel")
+async def leave(interaction: discord.Interaction):
+    if interaction.guild.voice_client:
+        await interaction.guild.voice_client.disconnect()
+        await interaction.response.send_message("Left the voice channel!")
     else:
-        await ctx.send("I'm not in a voice channel!")
+        await interaction.response.send_message("I'm not in a voice channel!")
 
 # Simplify the on_message event handler
 @bot.event
@@ -346,7 +326,7 @@ async def on_command_error(ctx, error):
     else:
         print(f"Command error: {error}")
 
-@bot.command()
+@discord.app_commands.command()
 async def example(ctx):
     try:
         await ctx.send("Command executed!")
@@ -354,34 +334,32 @@ async def example(ctx):
         print(f"Error in example command: {e}")
 
 # Add queue command to show current queue
-@bot.command(name='queue')
-@is_correct_channel()
-async def show_queue(ctx):
-    guild_id = ctx.guild.id
+@bot.tree.command(name="queue", description="Show current song queue")
+async def show_queue(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
     if guild_id not in music_queues:
-        await ctx.send("No queue exists!")
+        await interaction.response.send_message("No queue exists!")
         return
 
     queue = music_queues[guild_id]
     if len(queue.queue) == 0:
-        await ctx.send("Queue is empty!")
+        await interaction.response.send_message("Queue is empty!")
         return
 
     queue_list = "\n".join([f"{i+1}. {song_cache[url]['title'] if url in song_cache else url}" 
                            for i, ((url, _), _) in enumerate(queue.queue)])
-    await ctx.send(f"**Current queue:**\n{queue_list}")
+    await interaction.response.send_message(f"**Current queue:**\n{queue_list}")
 
-@bot.command(name='skip')
-@is_correct_channel()
-async def skip(ctx):
-    guild_id = ctx.guild.id
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()  # This will trigger the after_playing callback
-        await ctx.send("Skipped current song!")
+@bot.tree.command(name="skip", description="Skip the current song")
+async def skip(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
+        interaction.guild.voice_client.stop()
+        await interaction.response.send_message("Skipped current song!")
     else:
-        await ctx.send("Nothing to skip!")
+        await interaction.response.send_message("Nothing to skip!")
 
-@bot.command(name='clear')
+@discord.app_commands.command(name='clear')
 @is_correct_channel()
 async def clear(ctx):
     guild_id = ctx.guild.id
@@ -391,7 +369,7 @@ async def clear(ctx):
     else:
         await ctx.send("No queue exists!")
 
-@bot.command(name='info')
+@discord.app_commands.command(name='info')
 async def info(ctx):
     embed = discord.Embed(
         title="Utaha",
@@ -407,25 +385,22 @@ async def info(ctx):
 
 
 # Personal uses commands
-@bot.command(name='seia')
-@is_correct_channel()
-async def seia(ctx):
+@bot.tree.command(name="seia", description="Play Seia's song")
+async def seia(interaction: discord.Interaction):
     url = "https://www.youtube.com/watch?v=6wqcni74cM4"
-    await play(ctx, url)
+    await play(interaction, url)
 
-@bot.command(name='aru')
-@is_correct_channel()
-async def aru(ctx):
+@bot.tree.command(name="aru", description="Play Aru's song")
+async def aru(interaction: discord.Interaction):
     url = "https://www.youtube.com/watch?v=ptKDIAXYoE8"
-    await play(ctx, url)
+    await play(interaction, url)
 
-@bot.command(name='arisu')
-@is_correct_channel()
-async def arisu(ctx):
+@bot.tree.command(name="arisu", description="Play Arisu's song")
+async def arisu(interaction: discord.Interaction):
     url = "https://www.youtube.com/watch?v=toPWvdaC84w"
-    await play(ctx, url)
+    await play(interaction, url)
 
-# @bot.command(name='28')
+# @discord.app_commands.command(name='28')
 # @is_correct_channel()
 # async def koyuki(ctx):
 #     await ctx.send("28")
