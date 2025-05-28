@@ -12,8 +12,3 @@
 /leave - Leave voice channel
 /clear - Clear the queue
 
-## Special Commands
-
-/seia - Play Seia's song
-/aru - Play Aru's song
-/arisu - Play Arisu's song
