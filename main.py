@@ -9,17 +9,20 @@ import json
 from collections import deque
 from dotenv import load_dotenv
 from discord import app_commands
+import re
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # Load environment variables
 load_dotenv()
 
-# Get Discord token and command prefix
+# Get Discord token, command prefix, and YouTube API key
 token = os.getenv('DISCORD_TOKEN')
+youtube_api_key = os.getenv('YOUTUBE_API_KEY')
 prefix = '/'
 
 # Cache directory for downloaded songs
 CACHE_DIRECTORY = "music_cache"
-
 
 # Bot config
 intents = discord.Intents.default()
@@ -46,7 +49,7 @@ YTDL_OPTIONS = {
 # Create Youtube DL client
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
-# Add these functions to manage cache persistence
+# Cache management
 def load_cache():
     try:
         with open('song_cache.json', 'r') as f:
@@ -58,8 +61,48 @@ def save_cache(cache):
     with open('song_cache.json', 'w') as f:
         json.dump(cache, f, indent=4)
 
-# Replace the song_cache initialization with this
 song_cache = load_cache()
+
+# Utility to extract playlist ID from URL
+def extract_playlist_id(url):
+    pattern = r'(?:list=)([a-zA-Z0-9_-]+)'
+    match = re.search(pattern, url)
+    return match.group(1) if match else None
+
+# Fetch video IDs from a YouTube playlist
+async def get_playlist_videos(playlist_id):
+    video_ids = []
+    try:
+        youtube = build('youtube', 'v3', developerKey=youtube_api_key)
+        request = youtube.playlistItems().list(
+            part='snippet',
+            playlistId=playlist_id,
+            maxResults=50
+        )
+        
+        while request:
+            response = request.execute()
+            for item in response.get('items', []):
+                video_id = item['snippet']['resourceId'].get('videoId')
+                if video_id:
+                    video_ids.append(video_id)
+            
+            # Handle pagination
+            next_page_token = response.get('nextPageToken')
+            if next_page_token:
+                request = youtube.playlistItems().list(
+                    part='snippet',
+                    playlistId=playlist_id,
+                    maxResults=50,
+                    pageToken=next_page_token
+                )
+            else:
+                request = None
+                
+        return video_ids
+    except HttpError as e:
+        print(f"Error fetching playlist: {e}")
+        return []
 
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
@@ -69,21 +112,18 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.url = data.get('url')
         self.filename = data.get('filename', None)
 
-    # Download song from URL
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
         
         print(f"Checking cache for URL: {url}")
         
-        # Check if the song is in cache
         if url in song_cache and os.path.exists(song_cache[url]['filename']):
             data = song_cache[url]
             filename = data['filename']
             print(f"Cache hit! Loading from cache: {filename}")
         else:
             print(f"Cache miss! Downloading...")
-            # Download if not in cache
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
             
             if 'entries' in data:
@@ -91,13 +131,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
             filename = ytdl.prepare_filename(data)
             
-            # Store in cache
             song_cache[url] = {
                 'title': data.get('title'),
                 'url': data.get('url'),
                 'filename': filename
             }
-            # Save cache to file after updating
             save_cache(song_cache)
             print(f"Downloaded new song: {filename}")
 
@@ -134,23 +172,21 @@ class MusicQueue:
     def __init__(self):
         self.queue = deque()
         self.current = None
-        self.loop_count = 0  # Number of times to loop (0 = no loop, -1 = infinite)
-        self.current_loops = 0  # Track how many times current song has looped
+        self.loop_count = 0
+        self.current_loops = 0
 
     def add(self, item):
         self.queue.append(item)
 
     def next(self):
         if self.current and self.loop_count != 0:
-            # Still have loops to go
             if self.loop_count > 0:
                 self.current_loops += 1
                 if self.current_loops < self.loop_count:
                     return self.current
-            elif self.loop_count == -1:  # Infinite loop
+            elif self.loop_count == -1:
                 return self.current
                 
-        # No more loops or no current song
         self.current_loops = 0
         if len(self.queue) > 0:
             self.current = self.queue.popleft()
@@ -168,15 +204,14 @@ class MusicQueue:
     def get_current_title(self):
         if self.current is None:
             return None
-        url, _ = self.current  # Unpack the tuple
-        # Return title from cache if available, otherwise return URL
+        url, _ = self.current
         return song_cache[url]['title'] if url in song_cache else url
 
-music_queues = {}  # Dictionary to store queues for each guild
+music_queues = {}
 
-@bot.tree.command(name="play", description="Play a song from URL")
+@bot.tree.command(name="play", description="Play a song or playlist from URL")
 @app_commands.describe(
-    url="The URL of the song to play",
+    url="The URL of the song or playlist to play",
     loop="Number of times to loop (use ! for infinite)",
     skip="Skip current song if playing"
 )
@@ -186,14 +221,12 @@ async def play(
     loop: str = None, 
     skip: bool = False
 ):
-    await interaction.response.defer()  # Important for longer operations
+    await interaction.response.defer()
     
-    # Check if user is in a voice channel
     if interaction.user.voice is None:
         await interaction.followup.send("You're not connected to a voice channel!")
         return
 
-    # Connect to voice channel if not already connected
     if interaction.guild.voice_client is None:
         await interaction.user.voice.channel.connect()
     
@@ -203,7 +236,6 @@ async def play(
 
     queue = music_queues[guild_id]
     
-    # Parse loop argument
     loop_count = 0
     if loop:
         if loop == "!":
@@ -218,10 +250,35 @@ async def play(
                 await interaction.followup.send("Invalid loop count format!")
                 return
 
-    # Add to queue
+    # Check if URL is a playlist
+    if "playlist" in url.lower():
+        playlist_id = extract_playlist_id(url)
+        if not playlist_id:
+            await interaction.followup.send("Invalid playlist URL!")
+            return
+        
+        video_ids = await get_playlist_videos(playlist_id)
+        if not video_ids:
+            await interaction.followup.send("Failed to fetch playlist videos or playlist is empty!")
+            return
+        
+        # Add each video to the queue
+        video_urls = [f"https://www.youtube.com/watch?v={video_id}" for video_id in video_ids]
+        for video_url in video_urls:
+            queue.add((video_url, loop_count))
+        
+        if not interaction.guild.voice_client.is_playing() or skip:
+            if skip and interaction.guild.voice_client.is_playing():
+                interaction.guild.voice_client.stop()
+            await play_next(interaction, guild_id)
+            await interaction.followup.send(f"Added {len(video_urls)} songs from playlist to queue!")
+        else:
+            await interaction.followup.send(f"Added {len(video_urls)} songs from playlist to queue!")
+        return
+
+    # Handle single video
     queue.add((url, loop_count))
 
-    # If nothing is playing or skip is True, start playing
     if not interaction.guild.voice_client.is_playing() or skip:
         if skip and interaction.guild.voice_client.is_playing():
             interaction.guild.voice_client.stop()
@@ -236,7 +293,6 @@ async def play_next(interaction, guild_id, current_player=None):
 
     queue = music_queues[guild_id]
 
-    # If no current_player provided, get next from queue
     if current_player is None:
         current_player = queue.next()
 
@@ -244,10 +300,8 @@ async def play_next(interaction, guild_id, current_player=None):
         print("Queue is empty, nothing to play.")
         return
 
-    # Unpack the URL and loop count
     url, loop_count = current_player
     
-    # Download the song now
     player = await YTDLSource.from_url(url, loop=bot.loop, stream=False)
 
     def after_playing(error):
@@ -258,7 +312,6 @@ async def play_next(interaction, guild_id, current_player=None):
             )
         else:
             print("Song finished playing normally")
-            # Play next song in queue
             next_player = queue.next()
             if next_player:
                 asyncio.run_coroutine_threadsafe(
@@ -305,7 +358,6 @@ async def leave(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("I'm not in a voice channel!")
 
-# Simplify the on_message event handler
 @bot.event
 async def on_message(message):
     try:
@@ -313,7 +365,6 @@ async def on_message(message):
     except Exception as e:
         print(f"Error processing message: {e}")
 
-# Add error handling to your commands
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.errors.CommandOnCooldown):
@@ -333,7 +384,6 @@ async def example(ctx):
     except Exception as e:
         print(f"Error in example command: {e}")
 
-# Add queue command to show current queue
 @bot.tree.command(name="queue", description="Show current song queue")
 async def show_queue(interaction: discord.Interaction):
     guild_id = interaction.guild_id
@@ -379,90 +429,9 @@ async def info(ctx):
     embed.add_field(name="Author", value="F.Femto", inline=False)
     embed.add_field(name="Version", value="1.0", inline=False)
     embed.set_footer(text="Thank you for listening Utaha!")
-    embed.set_thumbnail(url="https://imgur.com/qrcB6kn")  # Optional: Add a thumbnail image
+    embed.set_thumbnail(url="https://imgur.com/qrcB6kn")
 
     await ctx.send(embed=embed)
-
-
-# Personal uses commands
-@bot.tree.command(name="seia", description="Play Seia's song")
-async def seia(interaction: discord.Interaction):
-    await interaction.response.defer()  # Add defer since we're using play command
-    url = "https://www.youtube.com/watch?v=6wqcni74cM4"
-    # Check if user is in a voice channel
-    if interaction.user.voice is None:
-        await interaction.followup.send("You're not connected to a voice channel!")
-        return
-    # Connect to voice channel if not already connected
-    if interaction.guild.voice_client is None:
-        await interaction.user.voice.channel.connect()
     
-    guild_id = interaction.guild_id
-    if guild_id not in music_queues:
-        music_queues[guild_id] = MusicQueue()
-    
-    queue = music_queues[guild_id]
-    queue.add((url, 0))  # Add with no loop
-    
-    if not interaction.guild.voice_client.is_playing():
-        await play_next(interaction, guild_id)
-    else:
-        await interaction.followup.send(f"Added Seia's song to queue!")
-
-
-@bot.tree.command(name="aru", description="Play Aru's song")
-async def aru(interaction: discord.Interaction):
-    await interaction.response.defer()  # Add defer since we're using play command
-    url = "https://www.youtube.com/watch?v=ptKDIAXYoE8"
-    # Check if user is in a voice channel
-    if interaction.user.voice is None:
-        await interaction.followup.send("You're not connected to a voice channel!")
-        return
-    # Connect to voice channel if not already connected
-    if interaction.guild.voice_client is None:
-        await interaction.user.voice.channel.connect()
-    
-    guild_id = interaction.guild_id
-    if guild_id not in music_queues:
-        music_queues[guild_id] = MusicQueue()
-    
-    queue = music_queues[guild_id]
-    queue.add((url, 0))  # Add with no loop
-    
-    if not interaction.guild.voice_client.is_playing():
-        await play_next(interaction, guild_id)
-    else:
-        await interaction.followup.send(f"Added Seia's song to queue!")
-
-@bot.tree.command(name="arisu", description="Play Arisu's song")
-async def arisu(interaction: discord.Interaction):
-    await interaction.response.defer()  # Add defer since we're using play command
-    url = "https://www.youtube.com/watch?v=toPWvdaC84w"
-    # Check if user is in a voice channel
-    if interaction.user.voice is None:
-        await interaction.followup.send("You're not connected to a voice channel!")
-        return
-    # Connect to voice channel if not already connected
-    if interaction.guild.voice_client is None:
-        await interaction.user.voice.channel.connect()
-    
-    guild_id = interaction.guild_id
-    if guild_id not in music_queues:
-        music_queues[guild_id] = MusicQueue()
-    
-    queue = music_queues[guild_id]
-    queue.add((url, 0))  # Add with no loop
-    
-    if not interaction.guild.voice_client.is_playing():
-        await play_next(interaction, guild_id)
-    else:
-        await interaction.followup.send(f"Added Seia's song to queue!")
-
-# @discord.app_commands.command(name='28')
-# @is_correct_channel()
-# async def koyuki(ctx):
-#     await ctx.send("28")
-
-
 # Run bot
 bot.run(token)
