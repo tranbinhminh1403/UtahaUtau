@@ -102,6 +102,6 @@ This adds all playlist songs to the queue.
 
 - **Bot not responding**: Check the Discord token and ensure the bot has proper permissions.
 - **No audio playing**: Verify FFmpeg is installed and accessible in your system's PATH.
-- **Playlist errors**: Ensure the YouTube API key is valid and the playlist URL is correct.
+- **Playlist errors**: Ensure the YouTube API key is valid and the playlist URL is correct (make sure playlist is public or unlisted).
 - **Rate limits**: If the bot encounters HTTP 429 errors, it will notify users to wait before retrying.
 
